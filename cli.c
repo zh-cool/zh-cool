@@ -42,6 +42,7 @@ int str_cli(int conn)
 	for(;;){
 		FD_ZERO(&rset);
 		FD_ZERO(&wset);
+
 		if(toiptr < toend){
 			FD_SET(STDIN_FILENO, &rset);
 		}
@@ -54,6 +55,7 @@ int str_cli(int conn)
 		if(froptr < friptr){
 			FD_SET(STDOUT_FILENO, &wset);
 		}
+
 		int num = select(maxfdp1, &rset, &wset, NULL, NULL);
 		if(num < 0){
 			if(errno == EINTR){
