@@ -15,7 +15,7 @@
 
 void sig_usr(int sig)
 {
-	printf("recv sig %s\n", strsignal(sig));
+	printf("recv sig  %s\n", strsignal(sig));
 	return;
 }
 
