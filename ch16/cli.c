@@ -38,6 +38,7 @@ int str_cli(int conn)
 	maxfdp1 = (maxfdp1 > STDOUT_FILENO ? maxfdp1 : STDOUT_FILENO) + 1;
 	fd_set rset, wset;
 	int len;
+	int peeron = 1;
 
 	for(;;){
 		FD_ZERO(&rset);
@@ -45,11 +46,13 @@ int str_cli(int conn)
 		if(toiptr < toend){
 			FD_SET(STDIN_FILENO, &rset);
 		}
-		if(friptr < frend){
-			FD_SET(conn, &rset);
-		}
-		if(tooptr < toiptr){
-			FD_SET(conn, &wset);
+		if(peeron){
+			if(friptr < frend){
+				FD_SET(conn, &rset);
+			}
+			if(tooptr < toiptr){
+				FD_SET(conn, &wset);
+			}
 		}
 		if(froptr < friptr){
 			FD_SET(STDOUT_FILENO, &wset);
@@ -69,7 +72,6 @@ int str_cli(int conn)
 				perror("read stdin");
 			}else if(len == 0){
 				printf("Client Terminor");
-				return 0;
 			}else{
 				toiptr += len;
 				FD_SET(conn, &wset);
@@ -83,8 +85,8 @@ int str_cli(int conn)
 					perror("read conn");
 				}
 			}else if(len == 0){
+				peeron  = 0;
 				printf("Server Terminor");
-				return 0;
 			}else{
 				friptr += len;
 				FD_SET(STDOUT_FILENO, &wset);
@@ -119,11 +121,42 @@ int str_cli(int conn)
 	return 0;
 }
 
+int connect_nb(int fd, struct sockaddr *addr, socklen_t addrlen)
+{
+	int error;
+	int flags;
+	int len = sizeof(error);
+	flags = fcntl(fd, F_GETFL, 0);
+	fcntl(fd, F_SETFL, flags|O_NONBLOCK);
+
+	if(connect(fd, addr, addrlen) < 0){
+		perror("connect_nb_C");
+	}
+
+	fd_set wset;
+	FD_ZERO(&wset);
+	FD_SET(fd, &wset);
+	if(select(fd+1, NULL, &wset, NULL, NULL) < 0){
+		perror("select");
+		return 0;
+	}
+	if(FD_ISSET(fd, &wset)){
+		getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len);
+		if(error){
+			errno = error;
+			perror("connect_nb");
+			exit(0);
+		}
+	}
+	fcntl(fd, F_SETFL, flags);
+	return fd;
+}
+
 int main(int argc, char **argv)
 {
 	struct addrinfo hints, *result, *rp;
 
-	signal(SIGUSR1, sig_usr);
+	signal(SIGPIPE, sig_usr);
 
 	bzero(&hints, sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
@@ -155,9 +188,13 @@ int main(int argc, char **argv)
         if(!rp){
                 exit(0);
         }
-	printf("connect success\n");
 
-        write(fd, "austin", 6);
-	str_cli(fd);
+        struct linger lger;
+        lger.l_onoff = 1;
+        lger.l_linger = 0;
+        setsockopt(fd, SOL_SOCKET, SO_LINGER, &lger, sizeof(lger));
+        close(fd);
+
+	//str_cli(fd);
 	return 0;
 }
