@@ -16,23 +16,50 @@ jmp_buf reset;
 
 void sig_bus(int sig)
 {
-	//longjmp(reset, 1);
+        //longjmp(reset, 1);
 }
 
-        char buf[BUFSIZ];
+void check_client(int conn)
+{
+        fd_set rset, wset, eset;
+        FD_ZERO(&rset);
+        FD_ZERO(&wset);
+        FD_ZERO(&eset);
+
+        FD_SET(conn, &rset);
+        FD_SET(conn, &wset);
+        FD_SET(conn, &eset);
+
+        int num = select(conn+1, &rset, &wset, &eset, NULL);
+        printf("NUM:%d\n", num);
+        if(num < 0){
+                perror("select");
+                exit(0);
+        }
+        if(FD_ISSET(conn, &rset)){
+                printf("read ready\n");
+        }
+        if(FD_ISSET(conn, &wset)){
+                printf("write ready\n");
+        }
+        if(FD_ISSET(conn, &eset)){
+                printf("expire ready");
+        }
+}
+char buf[BUFSIZ];
 int main(int argc, char **argv)
 {
-	//signal(SIGBUS, sig_bus);
-	//signal(SIGSEGV, sig_bus);
+        //signal(SIGBUS, sig_bus);
+        //signal(SIGSEGV, sig_bus);
 
-	struct addrinfo hints, *result, *rp;
-	bzero(&hints, sizeof(hints));
-	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_flags = AI_PASSIVE;
+        struct addrinfo hints, *result, *rp;
+        bzero(&hints, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_flags = AI_PASSIVE;
 
-	int ret;
-	char *host = NULL;
+        int ret;
+        char *host = NULL;
 	char *service = "5000";
 	if (argc > 2) {
 		host = argv[1];
@@ -73,12 +100,12 @@ int main(int argc, char **argv)
                 break;
         }
 
-
         sleep(5);
         for (;;) {
                 struct sockaddr_storage peer;
                 socklen_t len = sizeof(peer);
                 printf("begin 11 accept\n");
+                check_client(fd);
 		int conn = accept(fd, (void *)&peer, &len);
 		if (conn < 0) {
 			perror("accept");
@@ -87,6 +114,7 @@ int main(int argc, char **argv)
                 getnameinfo((void*)&peer, len, ip, sizeof(ip), serv, sizeof(serv), NI_NUMERICHOST|NI_NUMERICSERV);
                 printf("Client:%s:%s\n", ip, serv);
 
+                check_client(conn);
 
                 if(getpeername(conn, (void*)&peer, &len) < 0){
                         perror("getpeername");
