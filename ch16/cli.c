@@ -63,7 +63,6 @@ int str_cli(int conn)
 			return 0;
 		}
 
-		// add file
 		if(FD_ISSET(STDIN_FILENO, &rset)){
 			len = read(STDIN_FILENO, toiptr, toend-toiptr);
 			if(len < 0){
