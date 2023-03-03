@@ -2,6 +2,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/ether.h>
 #include <netdb.h>
 #include <syslog.h>
 #include <time.h>
@@ -25,9 +26,10 @@ int main(int argc, char **argv)
         bzero(&hints, sizeof(hints));
         hints.ai_family = AF_UNSPEC;
         //hints.ai_socktype = SOCK_STREAM;
-        //hints.ai_socktype = SOCK_DGRAM;
-        //hints.ai_flags = AI_PASSIVE;
+        //hints.ai_socktype = SOCK_RAW;
+        hints.ai_flags = AI_PASSIVE;
         //hints.ai_protocol = IPPROTO_TCP;
+        ETH_P_IP
 
 	if (argc == 2) {
 		ret = getaddrinfo(NULL, argv[1], &hints, &result);
