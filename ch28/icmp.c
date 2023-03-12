@@ -67,9 +67,10 @@ int send_v4(int fd, uint16_t seq, struct addrinfo *peer)
 	return sendto(fd, icmp, 8 + DAT_LEN, 0, peer->ai_addr, peer->ai_addrlen);
 }
 
-int proc_v4(struct ip *ip)//, struct sockaddr_storage *cli)
+int proc_v4(struct msghdr *msg, int rlen)
 {
-	int pktsize = ntohs(ip->ip_len) - (ip->ip_hl<<2);
+	struct ip *ip = msg->msg_iov->iov_base;
+	int pktsize = rlen - (ip->ip_hl<<2);
 	char peer[INET_ADDRSTRLEN];
 	inet_ntop(AF_INET, &ip->ip_src, peer, sizeof(peer));
 	struct icmp *icmp =(void*) ((char*)ip + (ip->ip_hl<<2));
@@ -77,7 +78,7 @@ int proc_v4(struct ip *ip)//, struct sockaddr_storage *cli)
 	gettimeofday(&t1, NULL);
 	t2 = (void*)&icmp->icmp_data;
 	double msec = (t1.tv_sec - t2->tv_sec)*1000 + (t1.tv_usec - t2->tv_usec)/1000.0;
-	printf("%d bytes from %s: icmp_seq=%d ttl=%d time=%.2f\n", pktsize, peer, ntohs(icmp->icmp_seq), ip->ip_ttl, msec);
+	printf("%d bytes from %s: icmp_seq=%d ttl=%d time=%.2f\n", rlen, peer, ntohs(icmp->icmp_seq), ip->ip_ttl, msec);
 	return 0;
 }
 
@@ -94,20 +95,33 @@ int send_v6(int fd, uint16_t seq, struct addrinfo *peer)
 	return sendto(fd, icmp, 8+DAT_LEN, 0, peer->ai_addr, peer->ai_addrlen);
 }
 
-int proc_v6(struct icmp6_hdr *icmp, int len, struct sockaddr_storage *peer)
+int proc_v6(struct msghdr *msg, int rlen)
 {
 	char ip[128];
-	getnameinfo((void*)peer, sizeof(*peer), ip, sizeof(ip), NULL, 0, NI_NUMERICHOST);
+	struct icmp6_hdr *icmp = msg->msg_iov->iov_base;
 
+	if(icmp->icmp6_id != htons(getpid())){
+		return 0;
+	}
+	struct cmsghdr *cmsg;
+	int32_t ttl;
+	for(cmsg=CMSG_FIRSTHDR(msg); cmsg; cmsg=CMSG_NXTHDR(msg, cmsg)){
+		if(cmsg->cmsg_level== IPPROTO_IPV6 && cmsg->cmsg_type==IPV6_HOPLIMIT){
+			ttl = *(int32_t*)CMSG_DATA(cmsg);
+		}
+		break;
+	}
+	getnameinfo(msg->msg_name, msg->msg_namelen, ip, sizeof(ip), NULL, 0, NI_NUMERICHOST);
 	struct timeval t1, *t2;
 	gettimeofday(&t1, NULL);
 	t2 = (void*)(icmp+1);
 	double msec = (t1.tv_sec - t2->tv_sec)*1000 + (t1.tv_usec - t2->tv_usec)/1000.0;
-	printf("%d bytes from %s: icmp_seq=%d ttl=d time=%.2f\n", len, ip, ntohs(icmp->icmp6_seq), msec);
+	int anclen = msg->msg_controllen;
+	printf("%d bytes from %s: icmp_seq=%d ttl=%d time=%.2f anc:%d\n", rlen, ip, ntohs(icmp->icmp6_seq), ttl, msec, anclen);
 	return 0;
 }
 
-int (*proc_icmp)(void*, ...);
+int (*proc_icmp)(struct msghdr *msg, int rlen);
 int (*send_icmp)(int fd, uint16_t seq, struct addrinfo *peer);
 
 void run_loop(int fd, struct addrinfo *peer)
@@ -134,12 +148,22 @@ void run_loop(int fd, struct addrinfo *peer)
 			tv.tv_usec = 0;
 			continue;
 		}
+
 		struct sockaddr_storage cli;
-		socklen_t len = sizeof(cli);
 		int rlen = 0;
-		if((rlen=recvfrom(fd, buf, sizeof(buf), 0, (void *)&cli, &len)) > 0){
-			proc_icmp((struct ip*)buf, rlen, &cli);
-		}
+		char anc[128];
+		struct iovec iov = {buf, sizeof(buf)};
+		struct msghdr msg;
+		msg.msg_name = &cli;
+		msg.msg_namelen = sizeof(cli);
+		msg.msg_control = anc;
+		msg.msg_controllen = sizeof(anc);
+		msg.msg_iov = &iov;
+		msg.msg_iovlen = 1;
+		if((rlen = recvmsg(fd, &msg, 0)) > 0){
+			printf("flags:%02x\n", msg.msg_flags);
+			proc_icmp(&msg, rlen);
+		}	
 	}
 }
 
@@ -163,25 +187,19 @@ int main(int argc, char **argv)
 		exit(0);
 	}
 
-	char ip[INET6_ADDRSTRLEN], serv[8];
 	for (rp = result; rp; rp = rp->ai_next) {
-		if ((ret = getnameinfo(rp->ai_addr, rp->ai_addrlen, ip, sizeof(ip), serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV)) < 0) {
-			perror(gai_strerror(ret));
-			exit(0);
-		}
-		printf("%s:%s type:%d proto:%d family:%d\n", ip, serv, rp->ai_socktype, rp->ai_protocol, rp->ai_family);
-
-		if(rp->ai_family == AF_INET){
-			send_icmp = send_v4;
-			proc_icmp = (void*)proc_v4;
-		}else{
-			send_icmp = send_v6;
-			proc_icmp = (void*)proc_v6;
-
-		}
 		if ((fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_family == AF_INET ? IPPROTO_ICMP : IPPROTO_ICMPV6)) < 0) {
 			perror("socket");
 			continue;
+		}
+		if(rp->ai_family == AF_INET){
+			send_icmp = send_v4;
+			proc_icmp = proc_v4;
+		} else {
+			int on = 1;
+			setsockopt(fd, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, &on, sizeof(on));
+			send_icmp = send_v6;
+			proc_icmp = proc_v6;
 		}
 		break;
 	}
