@@ -99,9 +99,13 @@ int send_v6(int fd, uint16_t seq, struct addrinfo *peer)
 int send_v6_ex(int fd, uint16_t seq, struct addrinfo *peer)
 {
 	struct msghdr msg;
-	char control[CMSG_SPACE(sizeof(int)) + CMSG_SPACE(sizeof(struct in6_pktinfo))];
-	msg.msg_control = control;
-	msg.msg_controllen = sizeof(control);
+	int len = CMSG_SPACE(sizeof(int)) + CMSG_SPACE(sizeof(struct in6_pktinfo));
+	union {
+		char buf[len];
+		struct cmsghdr align;
+	}u;
+	msg.msg_control = u.buf;
+	msg.msg_controllen = len;
 	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
 	cmsg->cmsg_len  = CMSG_LEN(sizeof(int));
 	cmsg->cmsg_level = IPPROTO_IPV6;
@@ -114,7 +118,8 @@ int send_v6_ex(int fd, uint16_t seq, struct addrinfo *peer)
 	cmsg->cmsg_type = IPV6_PKTINFO;
 	struct in6_pktinfo *pkt = (void*)CMSG_DATA(cmsg);
 	pkt->ipi6_ifindex = if_nametoindex("eth0.13");
-	inet_pton(AF_INET6, "2001:db8:a", &pkt->ipi6_addr);
+	inet_pton(AF_INET6, "240e:358:90c:8d00:9e5c:8eff:fe98:814d", &pkt->ipi6_addr);
+	pkt->ipi6_addr = in6addr_any;
 
 	struct iovec iovec = { buf, DAT_LEN+8};
 	msg.msg_iov = &iovec;
@@ -125,12 +130,17 @@ int send_v6_ex(int fd, uint16_t seq, struct addrinfo *peer)
 	icmp->icmp6_cksum = 0;
 	icmp->icmp6_id = htons(getpid());
 	icmp->icmp6_seq = htons(seq);
+	memset(icmp+1, 0x58, DAT_LEN);
+	gettimeofday((void*)(icmp+1), NULL);
 
 	msg.msg_name = peer->ai_addr;
 	msg.msg_namelen = peer->ai_addrlen;
 	msg.msg_flags = 0;
 
-	return sendmsg(fd, &msg, 0);
+	if(sendmsg(fd, &msg, 0) < 0){
+		perror("sendmsg");
+		exit(0);
+	}
 }
 
 int proc_exhdr(struct msghdr *msg)
@@ -189,10 +199,11 @@ int proc_v6(struct msghdr *msg, int rlen)
 	for(cmsg=CMSG_FIRSTHDR(msg); cmsg; cmsg=CMSG_NXTHDR(msg, cmsg)){
 		if(cmsg->cmsg_level== IPPROTO_IPV6 && cmsg->cmsg_type==IPV6_HOPLIMIT){
 			ttl = *(int32_t*)CMSG_DATA(cmsg);
+			break;
 		}
-		break;
+		continue;
 	}
-	proc_exhdr(msg);
+	//proc_exhdr(msg);
 
 	getnameinfo(msg->msg_name, msg->msg_namelen, ip, sizeof(ip), NULL, 0, NI_NUMERICHOST);
 	struct timeval t1, *t2;
