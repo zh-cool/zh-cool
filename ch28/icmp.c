@@ -17,6 +17,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <sys/select.h>
+#include <net/if.h>
 
 #define DAT_LEN 56
 char buf[BUFSIZ] = { 0 };
@@ -95,6 +96,85 @@ int send_v6(int fd, uint16_t seq, struct addrinfo *peer)
 	return sendto(fd, icmp, 8+DAT_LEN, 0, peer->ai_addr, peer->ai_addrlen);
 }
 
+int send_v6_ex(int fd, uint16_t seq, struct addrinfo *peer)
+{
+	struct msghdr msg;
+	char control[CMSG_SPACE(sizeof(int)) + CMSG_SPACE(sizeof(struct in6_pktinfo))];
+	msg.msg_control = control;
+	msg.msg_controllen = sizeof(control);
+	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+	cmsg->cmsg_len  = CMSG_LEN(sizeof(int));
+	cmsg->cmsg_level = IPPROTO_IPV6;
+	cmsg->cmsg_type = IPV6_HOPLIMIT;
+	*((int*)CMSG_DATA(cmsg)) = 128;
+
+	cmsg = CMSG_NXTHDR(&msg, cmsg);
+	cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
+	cmsg->cmsg_level = IPPROTO_IPV6;
+	cmsg->cmsg_type = IPV6_PKTINFO;
+	struct in6_pktinfo *pkt = (void*)CMSG_DATA(cmsg);
+	pkt->ipi6_ifindex = if_nametoindex("eth0.13");
+	inet_pton(AF_INET6, "2001:db8:a", &pkt->ipi6_addr);
+
+	struct iovec iovec = { buf, DAT_LEN+8};
+	msg.msg_iov = &iovec;
+	msg.msg_iovlen = 1;
+	struct icmp6_hdr *icmp = iovec.iov_base;
+	icmp->icmp6_type = ICMP6_ECHO_REQUEST;
+	icmp->icmp6_code = 0;
+	icmp->icmp6_cksum = 0;
+	icmp->icmp6_id = htons(getpid());
+	icmp->icmp6_seq = htons(seq);
+
+	msg.msg_name = peer->ai_addr;
+	msg.msg_namelen = peer->ai_addrlen;
+	msg.msg_flags = 0;
+
+	return sendmsg(fd, &msg, 0);
+}
+
+int proc_exhdr(struct msghdr *msg)
+{
+	struct cmsghdr *cmsg;
+	for(cmsg=CMSG_FIRSTHDR(msg); cmsg; cmsg=CMSG_NXTHDR(msg, cmsg)){
+		if(cmsg->cmsg_level != IPPROTO_IPV6){
+			continue;
+		}
+		if(cmsg->cmsg_type == IPV6_HOPLIMIT){
+			int *hop = (void*)CMSG_DATA(cmsg);
+			printf("Recv IPV6_HOPLIMIT %d\n", *hop);
+		}
+		if(cmsg->cmsg_type == IPV6_PKTINFO){
+			char ifname[IF_NAMESIZE];
+			char ip[INET6_ADDRSTRLEN];
+			struct in6_pktinfo *pkt;
+			pkt = (void*)CMSG_DATA(cmsg);
+			inet_ntop(AF_INET6, &pkt->ipi6_addr, ip, sizeof(ip));
+			printf("RecvIPV6_PKTINFO: %s %s\n", if_indextoname(pkt->ipi6_ifindex, ifname), ip);
+		}
+		if(cmsg->cmsg_type == IPV6_NEXTHOP){
+			printf("Recv IPV6_NEXTHOP\n");
+		}
+		if(cmsg->cmsg_type == IPV6_RTHDR){
+			printf("Recv IPV6_RTHDR\n");
+		}
+		if(cmsg->cmsg_type == IPV6_HOPOPTS){
+			printf("Recv IPV6_HOPOPTS\n");
+		}
+		if(cmsg->cmsg_type == IPV6_DSTOPTS){
+			printf("Recv IPV6_DSTOPTS\n");
+		}
+		if(cmsg->cmsg_type == IPV6_RTHDRDSTOPTS){
+			printf("Recv IPV6_RTHDRDSTOPTS\n");
+		}
+		if(cmsg->cmsg_type == IPV6_TCLASS){
+			int *class = (void*)CMSG_DATA(cmsg); 
+			printf("Recv IPV6_TCLASS %d\n", *class);
+		}
+	}
+	return 0;
+}
+
 int proc_v6(struct msghdr *msg, int rlen)
 {
 	char ip[128];
@@ -103,6 +183,7 @@ int proc_v6(struct msghdr *msg, int rlen)
 	if(icmp->icmp6_id != htons(getpid())){
 		return 0;
 	}
+	
 	struct cmsghdr *cmsg;
 	int32_t ttl;
 	for(cmsg=CMSG_FIRSTHDR(msg); cmsg; cmsg=CMSG_NXTHDR(msg, cmsg)){
@@ -111,6 +192,8 @@ int proc_v6(struct msghdr *msg, int rlen)
 		}
 		break;
 	}
+	proc_exhdr(msg);
+
 	getnameinfo(msg->msg_name, msg->msg_namelen, ip, sizeof(ip), NULL, 0, NI_NUMERICHOST);
 	struct timeval t1, *t2;
 	gettimeofday(&t1, NULL);
@@ -161,7 +244,6 @@ void run_loop(int fd, struct addrinfo *peer)
 		msg.msg_iov = &iov;
 		msg.msg_iovlen = 1;
 		if((rlen = recvmsg(fd, &msg, 0)) > 0){
-			printf("flags:%02x\n", msg.msg_flags);
 			proc_icmp(&msg, rlen);
 		}	
 	}
@@ -198,7 +280,12 @@ int main(int argc, char **argv)
 		} else {
 			int on = 1;
 			setsockopt(fd, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, &on, sizeof(on));
-			send_icmp = send_v6;
+			setsockopt(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &on, sizeof(on));
+			setsockopt(fd, IPPROTO_IPV6, IPV6_RECVRTHDR, &on, sizeof(on));
+			setsockopt(fd, IPPROTO_IPV6, IPV6_RECVHOPOPTS, &on, sizeof(on));
+			setsockopt(fd, IPPROTO_IPV6, IPV6_RECVDSTOPTS, &on, sizeof(on));
+			setsockopt(fd, IPPROTO_IPV6, IPV6_RECVTCLASS, &on, sizeof(on));
+			send_icmp = send_v6_ex;
 			proc_icmp = proc_v6;
 		}
 		break;
